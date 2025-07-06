@@ -6,6 +6,8 @@
 #include <iostream>
 #include <fstream>
 #include <locale> // tolower
+#include <algorithm> // Required for std::reverse  // <<< ADD THIS LINE
+
 
 
 using namespace std;
