@@ -4,33 +4,35 @@
 #include <map>
 #include <unordered_map>
 #include <future>
+#include <memory>
+#include <stdexcept>
 
 #include "Trade.h"
 #include "Market.h"
-
-using namespace std;
+#include "Pricer.h"
+#include "Date.h"
 
 struct MarketShock {
-	string market_id;
-	pair<Date, double> shock; //tenor and value
+	std::string market_id;
+	Date tenor_date;
+	double shock_value;
 };
 
 class CurveDecorator : public Market {
 public:
-	CurveDecorator(const Market& mkt, const MarketShock& curveShock) : thisMarketUp(mkt), thisMarketDown(mkt)
+	CurveDecorator(const Market& mkt, const MarketShock& curveRateShock)
+        : thisMarketUp(mkt), thisMarketDown(mkt)
 	{
-		cout << "curve decorator is created" << endl;
-		auto curve_up = thisMarketUp.getCurve(curveShock.market_id);
-		curve_up->shock(curveShock.shock.first, curveShock.shock.second);
-		cout << "curve tenor " << curveShock.shock.first << "is shocked " << curveShock.shock.second << endl;
+		auto curve_up = thisMarketUp.getCurve(curveRateShock.market_id);
+        if (!curve_up) throw std::runtime_error("IR curve not found for up-shock: " + curveRateShock.market_id);
+		curve_up->shock(curveRateShock.tenor_date, curveRateShock.shock_value);
 
-		auto curve_down = thisMarketDown.getCurve(curveShock.market_id);
-		curve_down->shock(curveShock.shock.first, -1 * curveShock.shock.second);
-		cout << "curve tenor " << curveShock.shock.first << "is shocked " << curveShock.shock.second << endl;
-
+		auto curve_down = thisMarketDown.getCurve(curveRateShock.market_id);
+        if (!curve_down) throw std::runtime_error("IR curve not found for down-shock: " + curveRateShock.market_id);
+		curve_down->shock(curveRateShock.tenor_date, -1.0 * curveRateShock.shock_value);
 	}
-	inline const Market getMarketUp() const { return thisMarketUp; }
-	inline const Market getMarketDown() const { return thisMarketDown; }
+	inline const Market& getMarketUp() const { return thisMarketUp; }
+	inline const Market& getMarketDown() const { return thisMarketDown; }
 
 private:
 	Market thisMarketUp;
@@ -39,76 +41,94 @@ private:
 
 class VolDecorator : public Market {
 public:
-	VolDecorator(const Market& mkt, const MarketShock& volShock) :originMarket(mkt), thisMarket(mkt)
-	{
-		cout << "vol decorator is created" << endl;
-		auto curve = thisMarket.getVolCurve(volShock.market_id);
-		curve->shock(volShock.shock.first, volShock.shock.second);
-		cout << "vol curve " << volShock.shock.first << "is shocked" << volShock.shock.second << endl;
-	}
-	inline const Market& getOriginMarket() const { return originMarket; }
-	inline const Market& getMarket() const { return thisMarket; }
+    VolDecorator(const Market& mkt, const MarketShock& volCurveShock)
+        : thisMarketUp(mkt), thisMarketDown(mkt)
+    {
+        auto vol_curve_up = thisMarketUp.getVolCurve(volCurveShock.market_id);
+        if (!vol_curve_up) throw std::runtime_error("Vol curve not found for up-shock: " + volCurveShock.market_id);
+        vol_curve_up->shock(volCurveShock.tenor_date, volCurveShock.shock_value);
+
+        auto vol_curve_down = thisMarketDown.getVolCurve(volCurveShock.market_id);
+        if (!vol_curve_down) throw std::runtime_error("Vol curve not found for down-shock: " + volCurveShock.market_id);
+        vol_curve_down->shock(volCurveShock.tenor_date, -1.0 * volCurveShock.shock_value);
+    }
+
+    inline const Market& getMarketUp() const { return thisMarketUp; }
+    inline const Market& getMarketDown() const { return thisMarketDown; }
 
 private:
-	Market originMarket;
-	Market thisMarket;
+    Market thisMarketUp;
+    Market thisMarketDown;
 };
 
 class PriceDecorator : public Market {
 public:
-	PriceDecorator(const Market& mkt, const MarketShock& priceShock) : thisMarket(mkt)
-	{
-		cout << "stock price decorator is created" << endl;
-		thisMarket.shockPrice(priceShock.market_id, priceShock.shock.second);
+	PriceDecorator(const Market& mkt, const MarketShock& stockPriceShock)
+        : thisMarketUp(mkt), thisMarketDown(mkt)
+    {
+		thisMarketUp.shockPrice(stockPriceShock.market_id, stockPriceShock.shock_value);
+        thisMarketDown.shockPrice(stockPriceShock.market_id, -1.0 * stockPriceShock.shock_value);
 	}
 
-	inline const Market& getMarket() const { return thisMarket; }
-
+	inline const Market& getMarketUp() const { return thisMarketUp; }
+    inline const Market& getMarketDown() const { return thisMarketDown; }
 private:
-	Market thisMarket;
+	Market thisMarketUp;
+    Market thisMarketDown;
 };
 
 class RiskEngine
 {
 public:
-
-	RiskEngine(const Market& market, double curve_shock, double vol_shock, double price_shock) 
+	RiskEngine(const Market& market, double ir_curve_shock_val, double vol_curve_shock_val, double stock_price_shock_val)
+        : originalMarket(market)
 	{
-		//add implementation, create curve shocks, vol shocks w.r.t to curve structure etc
-		auto usdCurveShock = MarketShock();
-		usdCurveShock.market_id = "USD-SOFR";
-		usdCurveShock.shock = make_pair(Date(), 0.0001);
-		auto usdShockedCurve = CurveDecorator(market, usdCurveShock);
-		curveShocks.emplace("USD-SOFR", usdShockedCurve);
+        MarketShock usd_ir_shock;
+        usd_ir_shock.market_id = "USD-SOFR";
+        usd_ir_shock.tenor_date = Date();
+        usd_ir_shock.shock_value = ir_curve_shock_val;
+        if (market.hasCurve("USD-SOFR")) {
+		    curveShocks.emplace("USD-SOFR", CurveDecorator(market, usd_ir_shock));
+        }
 
-		auto sgdCurveShock = MarketShock();
-		sgdCurveShock.market_id = "SGD-SORA";
-		sgdCurveShock.shock = make_pair(Date(), 0.0001);
-		auto sgdShockedCurve = CurveDecorator(market, usdCurveShock);
-		curveShocks.emplace("SGD-SORA", sgdShockedCurve);
+        MarketShock sgd_ir_shock;
+        sgd_ir_shock.market_id = "SGD-SORA";
+        sgd_ir_shock.tenor_date = Date();
+        sgd_ir_shock.shock_value = ir_curve_shock_val;
+        if (market.hasCurve("SGD-SORA")) {
+		    curveShocks.emplace("SGD-SORA", CurveDecorator(market, sgd_ir_shock));
+        }
 
-		auto volShock = MarketShock();
-		volShock.market_id = "LOGVOL";
-		volShock.shock = make_pair(Date(), 0.01);
-		auto shockedVol = VolDecorator(market, volShock);
-		volShocks.emplace("LOGVOL", shockedVol);
+        MarketShock logvol_shock;
+        logvol_shock.market_id = "LOGVOL";
+        logvol_shock.tenor_date = Date();
+        logvol_shock.shock_value = vol_curve_shock_val;
+        if (market.hasVolCurve("LOGVOL")) {
+		    volShocks.emplace("LOGVOL", VolDecorator(market, logvol_shock));
+        }
+	}
 
-		cout << " risk engine is created .. " << endl;
-	};
+	void computeRisk(std::shared_ptr<Trade> trade, const std::string& riskType, std::shared_ptr<Pricer> pricer, bool singleThread);
 
-	void computeRisk(string riskType, std::shared_ptr<Trade> trade, bool singleThread);
-
-	inline map<string, double> getResult() const {
-		cout << " risk result: " << endl;
+	inline const std::map<std::string, double>& getResult() const {
 		return result;
-	};
+	}
+
+    double getRiskMeasure(const std::string& key) const {
+        auto it = result.find(key);
+        if (it != result.end()) {
+            return it->second;
+        }
+        return 0.0;
+    }
 
 private:
-	unordered_map<string, CurveDecorator> curveShocks; //tenor, shock
-	unordered_map<string, VolDecorator> volShocks;
-	unordered_map<string, PriceDecorator> priceShocks;
-
-	map<string, double> result;
-
+    Market originalMarket;
+	std::unordered_map<std::string, CurveDecorator> curveShocks;
+	std::unordered_map<std::string, VolDecorator> volShocks;
+	std::unordered_map<std::string, PriceDecorator> priceShocks;
+	std::map<std::string, double> result;
 };
+```
 
+**File 2: `Factory.h`** (Ensuring includes and `std::make_shared` are correct)

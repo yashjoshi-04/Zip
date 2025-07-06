@@ -1,69 +1,95 @@
 #ifndef _AMERICAN_TRADE
 #define _AMERICAN_TRADE
 
-#include <cassert> 
+#include <cassert>
+#include <string>
+#include <algorithm> // For std::max
+#include "TreeProduct.h" // Base class
+#include "Types.h"       // For OptionType
+#include "Payoff.h"      // For PAYOFF namespace
+#include "helper.h"      // For to_upper (assuming it's there)
 
-#include "TreeProduct.h"
-#include "Types.h"
-#include "Payoff.h"
 
 class AmericanOption : public TreeProduct {
 public:
-	AmericanOption() {}
-	AmericanOption(OptionType _optType, double _notional, double _strike, const Date& _start, const Date& _expiry, const std::string& name)
+	AmericanOption() : optType(OptionType::None), strike(0.0) {}
+	AmericanOption(OptionType optType_arg, double notional_arg, double strike_arg, const Date& start_arg, const Date& expiry_arg, const std::string& name_arg)
 	{
-		tradeType = "TreeProduct";
-		underlying = to_upper(name);
-		optType = _optType;
-		strike = _strike;
-		expiryDate = _expiry;
-		notional = _notional;
-		tradeDate = _start;		
-		rateCurve = "USD-SOFR"; // default rate curve, can be changed later
+		this->tradeType = "AmericanOption";
+		this->underlying = to_upper(name_arg);
+		this->optType = optType_arg;
+		this->strike = strike_arg;
+		this->expiryDate = expiry_arg;
+		this->notional = notional_arg;
+		this->tradeDate = start_arg;
+		this->rateCurve = "USD-SOFR";
+        if (this->underlying.rfind("SGD", 0) == 0 || this->underlying.rfind("STI",0) == 0) {
+            this->rateCurve = "SGD-SORA";
+        }
 	}
-	inline string getType() const { return tradeType; };
-	inline string getUnderlying() const { return underlying; };
-	inline double getNotional() const { return notional; }
-	virtual double Payoff(double S) const
+    // virtual ~AmericanOption() = default; // Implicitly virtual
+
+	// Trade interface overrides
+	std::string getType() const override { return tradeType; }
+	std::string getUnderlying() const override { return underlying; }
+	double getNotional() const override { return notional; }
+    // Pv is inherited from TreeProduct
+
+    // TreeProduct interface implementations
+	double Payoff(double S) const override
 	{
 		return PAYOFF::VanillaOption(optType, strike, S);
 	}
-	virtual const Date& GetExpiry() const
+	const Date& GetExpiry() const override
 	{
 		return expiryDate;
 	}
-	virtual double ValueAtNode(double S, double t, double continuation) const
+	double ValueAtNode(double S, double t, double continuation) const override
 	{
 		return std::max(Payoff(S), continuation);
 	}
 
-private:
+    OptionType getOptType() const override { return optType; }
+    double getStrike() const override { return strike; }
+    const std::string& getRateCurve() const override { return rateCurve; }
+
+protected:
 	OptionType optType;
 	double strike;
 	Date expiryDate;
-	string rateCurve;
+    std::string rateCurve;
 };
 
-class AmerCallSpread : public TreeProduct {
+class AmerCallSpread : public AmericanOption {
 public:
-	AmerCallSpread(double _k1, double _k2, const Date& _expiry)
-		: strike1(_k1), strike2(_k2), expiryDate(_expiry)
+	AmerCallSpread(const std::string& name_arg, double notional_arg, double k1, double k2, const Date& start_arg, const Date& expiry_arg)
 	{
-		assert(_k1 < _k2);
+        this->tradeType = "AmerCallSpread";
+        this->underlying = to_upper(name_arg);
+        this->optType = OptionType::Call;
+        this->strike = k1; // Base class strike
+        this->strike1_val = k1;
+        this->strike2_val = k2;
+        this->expiryDate = expiry_arg;
+        this->notional = notional_arg;
+        this->tradeDate = start_arg;
+		this->rateCurve = "USD-SOFR";
+        if (this->underlying.rfind("SGD", 0) == 0 || this->underlying.rfind("STI",0) == 0) {
+             this->rateCurve = "SGD-SORA";
+        }
+		assert(k1 < k2);
 	};
-	virtual double Payoff(double S) const
+
+	double Payoff(double S) const override
 	{
-		return PAYOFF::CallSpread(strike1, strike2, S);
+		return PAYOFF::CallSpread(strike1_val, strike2_val, S);
 	}
-	virtual const Date& GetExpiry() const
-	{
-		return expiryDate;
-	}
+	// Inherits GetExpiry, ValueAtNode, getOptType, getRateCurve from AmericanOption.
+    // getStrike() will return k1. ValueAtNode will use the spread's Payoff.
 
 private:
-	double strike1;
-	double strike2;
-	Date expiryDate;
+	double strike1_val;
+	double strike2_val;
 };
 
 #endif
